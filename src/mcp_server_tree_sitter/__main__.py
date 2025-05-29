@@ -68,8 +68,9 @@ def main() -> int:
         # mcp.run()
         mcp.run(
             transport="streamable-http",
-            # log_level="debug",
-            # path="/my-custom-sse-path",
+            host="172.17.0.1",
+            port=8500,
+            log_level="debug",
         )
     except KeyboardInterrupt:
         logger.info("Server stopped by user")

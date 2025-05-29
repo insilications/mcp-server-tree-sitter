@@ -97,7 +97,6 @@ def list_project_files(
         # c) Handle all files in the current directory
         for fname in filenames:
             if ext_set and fname.rpartition(".")[2].lower() not in ext_set:
-                print(f"fname: {fname}")
                 continue
 
             rel_path = cur_path.joinpath(fname).relative_to(root)

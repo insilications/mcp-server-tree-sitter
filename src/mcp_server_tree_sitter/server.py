@@ -3,7 +3,8 @@
 import os
 from typing import Any, Dict, Optional, Tuple
 
-from mcp.server.fastmcp import FastMCP
+# from mcp.server.fastmcp import FastMCP
+from fastmcp import FastMCP
 
 from .bootstrap import get_logger, update_log_levels
 from .config import ServerConfig
@@ -166,8 +167,9 @@ def main() -> None:
     # mcp.run()
     mcp.run(
         transport="streamable-http",
-        # log_level="debug",
-        # path="/my-custom-sse-path",
+        host="172.17.0.1",
+        port=8500,
+        log_level="debug",
     )
 
 
