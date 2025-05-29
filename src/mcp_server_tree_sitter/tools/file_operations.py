@@ -1,10 +1,14 @@
 """File operation tools for MCP server."""
 
 import logging
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from typing import Any, List, Optional
+from pathlib import PurePosixPath
 
-from ..exceptions import FileAccessError, ProjectError
+from ..api import get_config
+from ..exceptions import FileAccessError, ProjectError, SecurityError
 from ..utils.security import validate_file_access
 
 logger = logging.getLogger(__name__)
@@ -17,61 +21,174 @@ def list_project_files(
     filter_extensions: Optional[List[str]] = None,
 ) -> List[str]:
     """
-    List files in a project, optionally filtered by pattern.
+    Return a sorted list of project-relative file paths, excluding everything
+    under get_config().security.excluded_dirs.
 
-    Args:
-        project: Project object
-        pattern: Glob pattern for files (e.g., "**/*.py")
-        max_depth: Maximum directory depth to traverse
-        filter_extensions: List of file extensions to include (without dot)
-
-    Returns:
-        List of relative file paths
+    Performance notes:
+    • One pass over the directory tree (os.walk)
+    • Excluded directories are removed from traversal in-place (O(1) per dir)
+    • Path / regex objects created exactly once
     """
-    root = project.root_path
+    root: Path = Path(project.root_path).resolve()
+    config = get_config()
+    config_excluded_dirs = config.security.excluded_dirs
+    config_allowed_extensions = config.security.allowed_extensions
+
+    # ------------------------------------------------------------------ #
+    # 1.  Pre-compute helper structures
+    # ------------------------------------------------------------------ #
+    excluded_dirs = {(root / p).resolve() for p in config_excluded_dirs}
+
+    def _is_excluded(p: Path) -> bool:
+        """True if p is or is inside one of the excluded_dirs."""
+        # Fast prefix test without creating new objects
+        for ex in excluded_dirs:
+            # `p == ex` allows excluding the directory itself,
+            # `p.is_relative_to(ex)` would allocate Path again
+            if ex in p.parents or p == ex:
+                return True
+        return False
+
+    # Glob-style pattern preparation
     pattern = pattern or "**/*"
-    files = []
+    def _pattern_ok(rel_str: str, pat: str = pattern) -> bool:
+        p = PurePosixPath(rel_str)
+        while True:
+            if p.match(pat):
+                return True
+            if pat.startswith("**/"):
+                pat = pat[3:]
+                continue
+            return False
 
-    # Handle max_depth=0 specially to avoid glob patterns with /*
-    if max_depth == 0:
-        # For max_depth=0, only list files directly in root directory
-        for path in root.iterdir():
-            if path.is_file():
-                # Skip files that don't match extension filter
-                if filter_extensions and path.suffix.lower()[1:] not in filter_extensions:
-                    continue
+    # Extension filter
+    cfg_exts = config_allowed_extensions or []
+    arg_exts = filter_extensions or []
+    if cfg_exts or arg_exts:
+        # Build intersection if both lists supplied, else the non-empty one
+        if cfg_exts and arg_exts:
+            ext_set = {e.lower() for e in cfg_exts} & {e.lower() for e in arg_exts}
+        else:
+            ext_set = {e.lower() for e in (cfg_exts or arg_exts)}
+    else:
+        ext_set = None
 
-                # Get path relative to project root
-                rel_path = path.relative_to(root)
-                files.append(str(rel_path))
+    # Depth bookkeeping
+    root_depth = len(root.parts)
 
-        return sorted(files)
+    # ------------------------------------------------------------------ #
+    # 2.  Walk the tree – prune dirs, collect matching files
+    # ------------------------------------------------------------------ #
+    results: list[str] = []
 
-    # Handle max depth for glob pattern for max_depth > 0
-    if max_depth is not None and max_depth > 0 and "**" in pattern:
-        parts = pattern.split("**")
-        if len(parts) == 2:
-            pattern = f"{parts[0]}{'*/' * max_depth}{parts[1]}"
+    for current_dir, dirnames, filenames in os.walk(root, topdown=True):
+        cur_path = Path(current_dir)
 
-    # Ensure pattern doesn't start with / to avoid NotImplementedError
-    if pattern.startswith("/"):
-        pattern = pattern[1:]
+        # a) Prune excluded dirs BEFORE descent
+        dirnames[:] = [d for d in dirnames if not _is_excluded(cur_path / d)]
 
-    # Convert extensions to lowercase for case-insensitive matching
-    if filter_extensions:
-        filter_extensions = [ext.lower() for ext in filter_extensions]
+        # b) Enforce depth limit (if any)
+        if max_depth is not None:
+            current_depth = len(cur_path.parts) - root_depth
+            if current_depth >= max_depth:
+                # Prevent further recursion
+                dirnames[:] = []
 
-    for path in root.glob(pattern):
-        if path.is_file():
-            # Skip files that don't match extension filter
-            if filter_extensions and path.suffix.lower()[1:] not in filter_extensions:
+        # c) Handle all files in the current directory
+        for fname in filenames:
+            if ext_set and fname.rpartition(".")[2].lower() not in ext_set:
+                print(f"fname: {fname}")
                 continue
 
-            # Get path relative to project root
-            rel_path = path.relative_to(root)
-            files.append(str(rel_path))
+            rel_path = cur_path.joinpath(fname).relative_to(root)
+            rel_str = rel_path.as_posix()  # keep POSIX separators
 
-    return sorted(files)
+            if _pattern_ok(rel_str):
+                results.append(rel_str)
+
+    results.sort()
+    return results
+
+
+# def list_project_files(
+#     project: Any,
+#     pattern: Optional[str] = None,
+#     max_depth: Optional[int] = None,
+#     filter_extensions: Optional[List[str]] = None,
+# ) -> List[str]:
+#     """
+#     List files in a project, excluding those listed in get_config().security.excluded_dirs.
+#     Optionally filtered by pattern.
+#
+#     Args:
+#         project: Project object
+#         pattern: Glob pattern for files (e.g., "**/*.py")
+#         max_depth: Maximum directory depth to traverse
+#         filter_extensions: List of file extensions to include (without dot)
+#
+#     Returns:
+#         List of relative file paths
+#     """
+#
+#     excluded_dirs = get_config().security.excluded_dirs
+#     root = project.root_path
+#     pattern = pattern or "**/*"
+#     files = []
+#
+#     # Handle max_depth=0 specially to avoid glob patterns with /*
+#     if max_depth == 0:
+#         # For max_depth=0, only list files directly in root directory
+#         for path in root.iterdir():
+#             exclude = False
+#             for excluded in excluded_dirs:
+#                 if path.is_relative_to(root / excluded):
+#                     exclude = True
+#                     break
+#             if exclude:
+#                 continue
+#             if path.is_file():
+#                 # Skip files that don't match extension filter
+#                 if filter_extensions and path.suffix.lower()[1:] not in filter_extensions:
+#                     continue
+#
+#                 # Get path relative to project root
+#                 rel_path = path.relative_to(root)
+#                 files.append(str(rel_path))
+#
+#         return sorted(files)
+#
+#     # Handle max depth for glob pattern for max_depth > 0
+#     if max_depth is not None and max_depth > 0 and "**" in pattern:
+#         parts = pattern.split("**")
+#         if len(parts) == 2:
+#             pattern = f"{parts[0]}{'*/' * max_depth}{parts[1]}"
+#
+#     # Ensure pattern doesn't start with / to avoid NotImplementedError
+#     if pattern.startswith("/"):
+#         pattern = pattern[1:]
+#
+#     # Convert extensions to lowercase for case-insensitive matching
+#     if filter_extensions:
+#         filter_extensions = [ext.lower() for ext in filter_extensions]
+#
+#     for path in root.glob(pattern):
+#         exclude = False
+#         for excluded in excluded_dirs:
+#             if path.is_relative_to(root / excluded):
+#                 exclude = True
+#                 break
+#         if exclude:
+#             continue
+#         if path.is_file():
+#             # Skip files that don't match extension filter
+#             if filter_extensions and path.suffix.lower()[1:] not in filter_extensions:
+#                 continue
+#
+#             # Get path relative to project root
+#             rel_path = path.relative_to(root)
+#             files.append(str(rel_path))
+#
+#     return sorted(files)
 
 
 def get_file_content(

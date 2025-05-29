@@ -22,7 +22,7 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
 ]
 dependencies = [
-    "mcp[cli]>=0.12.0",
+    "mcp[cli]>=1.9.1",
     "tree-sitter>=0.20.0",
     "tree-sitter-language-pack>=0.6.1",
     "pyyaml>=6.0",

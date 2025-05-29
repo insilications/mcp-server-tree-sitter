@@ -65,7 +65,12 @@ def main() -> int:
     # Run the server
     try:
         logger.info("Starting MCP Tree-sitter Server (with state persistence)")
-        mcp.run()
+        # mcp.run()
+        mcp.run(
+            transport="streamable-http",
+            # log_level="debug",
+            # path="/my-custom-sse-path",
+        )
     except KeyboardInterrupt:
         logger.info("Server stopped by user")
     except Exception as e:

@@ -163,7 +163,12 @@ def main() -> None:
 
     # Run the server
     logger.info("Starting MCP Tree-sitter Server")
-    mcp.run()
+    # mcp.run()
+    mcp.run(
+        transport="streamable-http",
+        # log_level="debug",
+        # path="/my-custom-sse-path",
+    )
 
 
 if __name__ == "__main__":
